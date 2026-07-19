@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+    <!-- Necesario en Android 13+ para que DownloadManager pueda mostrar la
+         notificación de progreso/finalización de las descargas. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Para que el selector de archivos (ej. subir el CV/foto en un
+         formulario web) ofrezca la opción de sacar una foto en el momento,
+         además de elegir un archivo ya existente. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- La cámara es opcional: la app funciona igual en dispositivos sin
+         cámara (solo no se ofrecerá esa opción en el selector). -->
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+
+
+    <application
+        android:name=".WebVisorApp"
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
+        android:theme="@style/Theme.WebVisor"
+        android:supportsRtl="true"
+        android:networkSecurityConfig="@xml/network_security_config"
+        tools:targetApi="31">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
+            android:theme="@style/Theme.WebVisor.NoActionBar">
+
+            <!-- Ícono de lanzador: permite abrir la app manualmente -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!--
+                Captura de enlaces http/https desde:
+                - Lector de QR nativo de la cámara
+                - WhatsApp, Email, Galería, cualquier app que comparta un link
+                Sin "autoVerify" ni host fijo: como la app no es dueña de un
+                dominio propio, Android la ofrecerá como opción en el selector
+                de aplicaciones ("Abrir con...") para CUALQUIER URL http/https.
+            -->
+            <intent-filter android:label="@string/app_name">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="http" />
+                <data android:scheme="https" />
+            </intent-filter>
+
+        </activity>
+    </application>
+
+</manifest>

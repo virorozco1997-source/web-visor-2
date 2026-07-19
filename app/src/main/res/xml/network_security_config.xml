@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!--
+        Se permite tráfico HTTP (no solo HTTPS) porque Web Visor puede
+        recibir enlaces de cualquier sitio vía QR o apps externas, y no
+        todos usan HTTPS. Si tu caso de uso es exclusivamente HTTPS,
+        cambiá cleartextTrafficPermitted a "false".
+    -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

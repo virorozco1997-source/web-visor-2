@@ -1,0 +1,8 @@
+<resources>
+    <color name="sage_green">#87A96B</color>
+    <color name="sage_green_dark">#6E8D55</color>
+    <color name="sage_green_light">#A3C08A</color>
+    <color name="white">#FFFFFF</color>
+    <color name="black">#000000</color>
+    <color name="window_background">#FFFFFF</color>
+</resources>

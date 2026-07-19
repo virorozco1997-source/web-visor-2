@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Web Visor</string>
+    <string name="empty_state_message">Escaneá un código QR o abrí un enlace desde WhatsApp, el correo o la galería para comenzar.</string>
+    <string name="downloading_toast">Descargando %1$s</string>
+    <string name="download_error">No se pudo descargar el archivo</string>
+    <string name="download_permission_denied">No se puede descargar sin permiso de almacenamiento</string>
+</resources>
