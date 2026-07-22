@@ -5,4 +5,6 @@
     <color name="white">#FFFFFF</color>
     <color name="black">#000000</color>
     <color name="window_background">#FFFFFF</color>
+    <color name="content_block_red">#B33A3A</color>
+    <color name="manual_block_gray">#6B7280</color>
 </resources>
