@@ -12,6 +12,8 @@ import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.util.Base64
 import android.webkit.JavascriptInterface
@@ -49,6 +51,54 @@ class MainActivity : AppCompatActivity() {
     /** Callback que la web deja pendiente mientras el usuario elige un archivo. */
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
 
+    // --- FocusGuard: pausa/tope diario en sitios que distraen ---
+    /** Host de la página cargada actualmente (para saber si "recién se entra"). */
+    private var currentHost: String? = null
+
+    /**
+     * Bloquea SOLO el buscador de Google en sí (google.com, www.google.com,
+     * y sus variantes por país como google.com.ar, google.co.uk, etc.),
+     * dejando pasar automáticamente cualquier otro servicio de Google
+     * (Drive, Gmail, Maps, login/accounts, Meet, Translate, etc.) sin
+     * necesidad de armar una lista de excepciones: esos hosts tienen un
+     * subdominio antes de "google" (drive.google.com, accounts.google.com)
+     * y por eso no matchean este patrón, que solo admite "google." o
+     * "www.google." al principio.
+     *
+     * OJO: además, esto solo aplica a la navegación PRINCIPAL (ver
+     * "request.isForMainFrame" más abajo) — un iframe de reCAPTCHA dentro
+     * de otra página tampoco se bloquea.
+     */
+    private val googleSearchHostRegex = Regex("^(www\\.)?google\\.[a-z.]+$")
+
+    private fun isManuallyBlockedHost(host: String?): Boolean {
+        if (host == null) return false
+        return googleSearchHostRegex.matches(host.lowercase())
+    }
+
+    /** URL distractora que queda esperando a que termine el cooldown. */
+    private var pendingFocusUrl: String? = null
+
+    private var focusCooldownHandler: Handler? = null
+    private var focusCooldownRunnable: Runnable? = null
+
+    /** true mientras la Activity está en primer plano (para no contar minutos en segundo plano). */
+    private var isAppInForeground = false
+
+    private val usageTickHandler = Handler(Looper.getMainLooper())
+    private val usageTickRunnable = object : Runnable {
+        override fun run() {
+            val overlayVisible = binding.focusGuardOverlay.visibility == View.VISIBLE
+            if (isAppInForeground && !overlayVisible && FocusGuard.isDistracting(currentHost)) {
+                FocusGuard.addUsedSeconds(this@MainActivity, 1)
+                if (FocusGuard.isBudgetExceeded(this@MainActivity)) {
+                    showFocusBlockedScreen()
+                }
+            }
+            usageTickHandler.postDelayed(this, 1000)
+        }
+    }
+
     /** Lanza el selector de archivos del sistema (galería, Drive, "Archivos", etc.). */
     private val fileChooserLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -71,6 +121,7 @@ class MainActivity : AppCompatActivity() {
         setupWebView()
         setupFullScreenOnScroll()
         setupDownloads()
+        setupFocusGuard()
 
         binding.swipeRefresh.setOnRefreshListener {
             binding.webView.reload()
@@ -78,6 +129,22 @@ class MainActivity : AppCompatActivity() {
 
         applyDarkModePreferences()
         handleIncomingIntent(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        isAppInForeground = true
+    }
+
+    override fun onPause() {
+        super.onPause()
+        isAppInForeground = false
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        usageTickHandler.removeCallbacks(usageTickRunnable)
+        focusCooldownRunnable?.let { focusCooldownHandler?.removeCallbacks(it) }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -317,6 +384,7 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                 super.onPageStarted(view, url, favicon)
+                currentHost = url?.let { Uri.parse(it).host }
                 binding.swipeRefresh.isRefreshing = true
                 binding.emptyState.visibility = View.GONE
             }
@@ -343,6 +411,46 @@ class MainActivity : AppCompatActivity() {
                 // se delegan a la app nativa correspondiente del sistema.
                 if (scheme != "http" && scheme != "https") {
                     return openWithExternalApp(uri)
+                }
+
+                // ContentGuard: bloqueo duro de sitios para adultos, manda
+                // por sobre cualquier otra regla.
+                val targetHost = uri.host
+
+                // Bloqueo manual: solo aplica a la navegación PRINCIPAL, no
+                // a iframes de otras páginas (ej. el widget de reCAPTCHA
+                // que corre bajo google.com/recaptcha/... dentro de otro
+                // sitio) — por eso el chequeo "request.isForMainFrame".
+                if (request.isForMainFrame && isManuallyBlockedHost(targetHost)) {
+                    showManuallyBlockedScreen(targetHost)
+                    return true
+                }
+
+                if (ContentGuard.isBlocked(targetHost)) {
+                    showContentBlockedScreen()
+                    return true
+                }
+
+                // ContentGuard: si es un buscador o YouTube sin modo seguro
+                // forzado, se reescribe la URL y se recarga con ese modo.
+                val safeUri = ContentGuard.applySafeSearch(uri)
+                if (safeUri != null) {
+                    binding.webView.loadUrl(safeUri.toString())
+                    return true
+                }
+
+                // FocusGuard: si el destino es un sitio que distrae y recién
+                // se está entrando ahí desde otro sitio, se frena la carga
+                // (cooldown o bloqueo por tope diario) en vez de dejarla pasar.
+                if (FocusGuard.isDistracting(targetHost) &&
+                    !targetHost.equals(currentHost, ignoreCase = true)
+                ) {
+                    if (FocusGuard.isBudgetExceeded(this@MainActivity)) {
+                        showFocusBlockedScreen()
+                    } else {
+                        showFocusCooldown(uri.toString())
+                    }
+                    return true // se intercepta: el WebView no la carga (todavía)
                 }
 
                 // Regla de Dominio Flexible: por defecto se permite navegar
@@ -390,6 +498,115 @@ class MainActivity : AppCompatActivity() {
      * DownloadManager del sistema, que se encarga de bajarlo a la carpeta
      * "Descargas" del dispositivo y mostrar el progreso/notificación.
      */
+    private fun setupFocusGuard() {
+        usageTickHandler.post(usageTickRunnable)
+
+        binding.focusGuardCancelButton.setOnClickListener {
+            hideFocusOverlay()
+            // "Volver": si veníamos de otra página la mostramos, si no, no
+            // pasa nada más (el sitio distractor nunca llegó a cargarse).
+            if (binding.webView.canGoBack()) {
+                binding.webView.goBack()
+            }
+        }
+
+        binding.focusGuardContinueButton.setOnClickListener {
+            val url = pendingFocusUrl
+            hideFocusOverlay()
+            if (url != null) {
+                binding.webView.loadUrl(url)
+            }
+        }
+    }
+
+    /** Pantalla (discreta, no roja) para el buscador de Google bloqueado a mano. */
+    private fun showManuallyBlockedScreen(host: String?) {
+        pendingFocusUrl = null
+        focusCooldownRunnable?.let { focusCooldownHandler?.removeCallbacks(it) }
+
+        binding.focusGuardOverlay.setBackgroundColor(
+            ContextCompat.getColor(this, R.color.manual_block_gray)
+        )
+        binding.focusGuardTitle.text = getString(R.string.manual_block_title)
+        binding.focusGuardMessage.text = getString(R.string.manual_block_message)
+        binding.focusGuardCountdown.text = ""
+        binding.focusGuardContinueButton.visibility = View.GONE
+        binding.focusGuardOverlay.visibility = View.VISIBLE
+    }
+
+    /** Pantalla de bloqueo duro para sitios NSFW (ContentGuard). Sin cooldown ni opción de pasar. */
+    private fun showContentBlockedScreen() {
+        pendingFocusUrl = null
+        focusCooldownRunnable?.let { focusCooldownHandler?.removeCallbacks(it) }
+
+        binding.focusGuardOverlay.setBackgroundColor(
+            ContextCompat.getColor(this, R.color.content_block_red)
+        )
+        binding.focusGuardTitle.text = getString(R.string.content_block_title)
+        binding.focusGuardMessage.text = getString(R.string.content_block_message)
+        binding.focusGuardCountdown.text = ""
+        binding.focusGuardContinueButton.visibility = View.GONE
+        binding.focusGuardOverlay.visibility = View.VISIBLE
+    }
+
+    /** Pantalla de espera (cooldown) antes de entrar a un sitio distractor. */
+    private fun showFocusCooldown(url: String) {
+        pendingFocusUrl = url
+
+        binding.focusGuardOverlay.setBackgroundColor(
+            ContextCompat.getColor(this, R.color.sage_green_dark)
+        )
+        binding.focusGuardTitle.text = getString(R.string.focus_guard_cooldown_title)
+        binding.focusGuardMessage.text = getString(R.string.focus_guard_cooldown_message)
+        binding.focusGuardContinueButton.visibility = View.GONE
+        binding.focusGuardOverlay.visibility = View.VISIBLE
+
+        var secondsLeft = FocusGuard.COOLDOWN_SECONDS
+        binding.focusGuardCountdown.text = secondsLeft.toString()
+
+        val handler = Handler(Looper.getMainLooper())
+        val runnable = object : Runnable {
+            override fun run() {
+                secondsLeft--
+                if (secondsLeft <= 0) {
+                    binding.focusGuardCountdown.text = "0"
+                    binding.focusGuardContinueButton.visibility = View.VISIBLE
+                } else {
+                    binding.focusGuardCountdown.text = secondsLeft.toString()
+                    handler.postDelayed(this, 1000)
+                }
+            }
+        }
+        focusCooldownHandler = handler
+        focusCooldownRunnable = runnable
+        handler.postDelayed(runnable, 1000)
+    }
+
+    /** Pantalla de bloqueo cuando ya se agotó el tope diario de minutos. */
+    private fun showFocusBlockedScreen() {
+        pendingFocusUrl = null
+        focusCooldownRunnable?.let { focusCooldownHandler?.removeCallbacks(it) }
+
+        binding.focusGuardOverlay.setBackgroundColor(
+            ContextCompat.getColor(this, R.color.sage_green_dark)
+        )
+        binding.focusGuardTitle.text = getString(R.string.focus_guard_blocked_title)
+        binding.focusGuardMessage.text = getString(
+            R.string.focus_guard_blocked_message,
+            FocusGuard.DAILY_BUDGET_MINUTES,
+            FocusGuard.formatDuration(FocusGuard.secondsUntilReset())
+        )
+        binding.focusGuardCountdown.text = ""
+        binding.focusGuardContinueButton.visibility = View.GONE
+        binding.focusGuardOverlay.visibility = View.VISIBLE
+    }
+
+    private fun hideFocusOverlay() {
+        focusCooldownRunnable?.let { focusCooldownHandler?.removeCallbacks(it) }
+        binding.focusGuardOverlay.visibility = View.GONE
+        pendingFocusUrl = null
+    }
+
     private fun setupDownloads() {
         binding.webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
             try {
@@ -606,7 +823,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onBackPressed() {
-        if (binding.webView.canGoBack()) {
+        if (binding.focusGuardOverlay.visibility == View.VISIBLE) {
+            hideFocusOverlay()
+        } else if (binding.webView.canGoBack()) {
             binding.webView.goBack()
         } else {
             super.onBackPressed()
